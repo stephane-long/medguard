@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from metrics import print_report
-from moderator import moderate_batch
+from metrics import generate_markdown_report, print_report
+from moderator import PROMPTS, moderate_batch
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 CSV_PATH = Path("commentaires.csv")
@@ -65,13 +65,15 @@ def save_checkpoint(df: pd.DataFrame, checkpoint_path: Path) -> None:
         for col in existing.columns:
             if col not in df.columns:
                 df[col] = existing[col]
+    if "statut_ref" not in df.columns:
+        df["statut_ref"] = None
     df.to_csv(checkpoint_path, index=True, encoding="utf-8-sig")
 
 
-async def run(model: str, limit: int | None) -> None:
+async def run(model: str, limit: int | None, prompt: int = 1, ref_col: str = "statut_externe") -> None:
     model_slug = model.replace("/", "_").replace("-", "_")
-    model_col = f"statut_llm_{model_slug}"
-    motif_col = f"motif_llm_{model_slug}"
+    model_col = f"statut_llm_{model_slug}_p{prompt}"
+    motif_col = f"motif_llm_{model_slug}_p{prompt}"
     checkpoint_path = RESULTS_DIR / "checkpoint.csv"
 
     print(f"Chargement des données : {CSV_PATH}")
@@ -83,10 +85,17 @@ async def run(model: str, limit: int | None) -> None:
 
     if not todo_idx:
         print("Tous les commentaires sont déjà traités (checkpoint existant).")
+        # S'assurer que statut_ref existe même sans nouveau traitement
+        if checkpoint_path.exists():
+            cp = pd.read_csv(checkpoint_path, encoding="utf-8-sig", index_col=0)
+            if "statut_ref" not in cp.columns:
+                cp["statut_ref"] = None
+                cp.to_csv(checkpoint_path, index=True, encoding="utf-8-sig")
+                print("Colonne statut_ref ajoutée au checkpoint.")
     else:
-        print(f"Modération de {len(todo_idx)} commentaires avec {model}...")
+        print(f"Modération de {len(todo_idx)} commentaires avec {model} (prompt p{prompt})...")
         texts = df.loc[todo_idx, "Corps Message"].fillna("").tolist()
-        results = await moderate_batch(texts, model)
+        results = await moderate_batch(texts, model, prompt=prompt)
 
         if model_col not in df.columns:
             df[model_col] = None
@@ -106,19 +115,38 @@ async def run(model: str, limit: int | None) -> None:
             df[model_col] = cp[model_col]
             df[motif_col] = cp.get(motif_col)
 
-    print_report(df, model_col)
+    print_report(df, model_col, ref_col)
 
     date_str = datetime.now().strftime("%Y%m%d_%H%M")
-    output_path = RESULTS_DIR / f"rapport_{date_str}_{model_slug}.csv"
     RESULTS_DIR.mkdir(exist_ok=True)
-    df.to_csv(output_path, index=False, encoding="utf-8-sig")
-    print(f"Rapport CSV sauvegardé : {output_path}")
+    csv_path = RESULTS_DIR / f"rapport_{date_str}_{model_slug}_p{prompt}.csv"
+    df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    print(f"Rapport CSV sauvegardé : {csv_path}")
+
+    md_path = RESULTS_DIR / f"rapport_{date_str}_{model_slug}_p{prompt}.md"
+    generate_markdown_report(df, model_col, model, prompt, md_path, ref_col)
 
 
 def main() -> None:
     args = sys.argv[1:]
     reset = "--reset" in args
     args = [a for a in args if a != "--reset"]
+
+    prompt = 1
+    if "--prompt" in args:
+        idx = args.index("--prompt")
+        prompt = int(args[idx + 1])
+        args = args[:idx] + args[idx + 2:]
+
+    if prompt not in PROMPTS:
+        sys.exit(f"Prompt {prompt} non défini. Disponibles : {sorted(PROMPTS)}")
+
+    ref_col = "statut_externe"
+    if "--ref" in args:
+        idx = args.index("--ref")
+        ref_col = args[idx + 1]
+        args = args[:idx] + args[idx + 2:]
+
     model = args[0] if args else MODEL
 
     if reset:
@@ -127,7 +155,7 @@ def main() -> None:
             checkpoint_path.unlink()
             print(f"Checkpoint supprimé : {checkpoint_path}")
 
-    asyncio.run(run(model, TEST_LIMIT))
+    asyncio.run(run(model, TEST_LIMIT, prompt, ref_col))
 
 
 if __name__ == "__main__":
