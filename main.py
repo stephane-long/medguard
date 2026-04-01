@@ -1,28 +1,29 @@
+import argparse
 import asyncio
-import sys
 from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
 
-from metrics import generate_markdown_report, print_report
+from metrics import generate_markdown_report, generate_markdown_report_externe, print_report
 from moderator import PROMPTS, moderate_batch
 
 # ── Configuration ──────────────────────────────────────────────────────────────
-CSV_PATH = Path("commentaires.csv")
+CSV_PATH = Path("test_sample_236.csv")
 RESULTS_DIR = Path("results")
 MODEL = "mistralai/mistral-small-2603"  # Changer ici pour tester un autre modèle
 
 # Limiter à N lignes pour les tests (None = toutes les lignes)
-TEST_LIMIT: int | None = 10
+TEST_LIMIT: int | None = None
 # ──────────────────────────────────────────────────────────────────────────────
 
 
 def load_data(limit: int | None = None) -> pd.DataFrame:
     df = pd.read_csv(
         CSV_PATH,
+        sep=";",
         encoding="utf-8-sig",
-        usecols=["Statut", "Date Traité", "Corps Message", "pseudo"],
+        usecols=["Statut", "Date Traité", "Human", "Corps Message", "pseudo"],
     )
     if limit:
         df = df.head(limit)
@@ -30,13 +31,25 @@ def load_data(limit: int | None = None) -> pd.DataFrame:
     return df
 
 
+def normalize_human(df: pd.DataFrame) -> pd.DataFrame:
+    def parse(val) -> str | None:
+        if pd.isna(val):
+            return None
+        return "accepté" if int(val) == 1 else "refusé"
+
+    df["statut_human"] = df["Human"].apply(parse)
+    return df
+
+
 def normalize_statut(df: pd.DataFrame) -> pd.DataFrame:
     def parse(val: str) -> tuple[str, str | None]:
         if not isinstance(val, str):
             return "accepté", None
-        lines = [line.strip() for line in val.splitlines() if line.strip()]
-        if "Refusé" in lines:
-            motif = next((line for line in lines if line not in ("Traité", "Refusé")), None)
+        tokens = val.replace("\n", " ").split()
+        if "Refusé" in tokens:
+            motif = next(
+                (t for t in tokens if t not in ("Traité", "Refusé")), None
+            )
             return "refusé", motif
         return "accepté", None
 
@@ -70,7 +83,10 @@ def save_checkpoint(df: pd.DataFrame, checkpoint_path: Path) -> None:
     df.to_csv(checkpoint_path, index=True, encoding="utf-8-sig")
 
 
-async def run(model: str, limit: int | None, prompt: int = 1, ref_col: str = "statut_externe") -> None:
+REF_COL = "statut_human"
+
+
+async def run(model: str, limit: int | None, prompt: int = 1) -> None:
     model_slug = model.replace("/", "_").replace("-", "_")
     model_col = f"statut_llm_{model_slug}_p{prompt}"
     motif_col = f"motif_llm_{model_slug}_p{prompt}"
@@ -79,6 +95,7 @@ async def run(model: str, limit: int | None, prompt: int = 1, ref_col: str = "st
     print(f"Chargement des données : {CSV_PATH}")
     df = load_data(limit)
     df = normalize_statut(df)
+    df = normalize_human(df)
 
     already_done = load_checkpoint(checkpoint_path, model_col)
     todo_idx = [i for i in df.index if i not in already_done]
@@ -93,7 +110,9 @@ async def run(model: str, limit: int | None, prompt: int = 1, ref_col: str = "st
                 cp.to_csv(checkpoint_path, index=True, encoding="utf-8-sig")
                 print("Colonne statut_ref ajoutée au checkpoint.")
     else:
-        print(f"Modération de {len(todo_idx)} commentaires avec {model} (prompt p{prompt})...")
+        print(
+            f"Modération de {len(todo_idx)} commentaires avec {model} (prompt p{prompt})..."
+        )
         texts = df.loc[todo_idx, "Corps Message"].fillna("").tolist()
         results = await moderate_batch(texts, model, prompt=prompt)
 
@@ -108,14 +127,15 @@ async def run(model: str, limit: int | None, prompt: int = 1, ref_col: str = "st
         save_checkpoint(df, checkpoint_path)
         print(f"Checkpoint sauvegardé : {checkpoint_path}")
 
-    # Charger les colonnes checkpoint si traitement partiel précédent
-    if model_col not in df.columns and checkpoint_path.exists():
+    # Charger toutes les colonnes du checkpoint dans df (runs courant + précédents)
+    if checkpoint_path.exists():
         cp = pd.read_csv(checkpoint_path, encoding="utf-8-sig", index_col=0)
-        if model_col in cp.columns:
-            df[model_col] = cp[model_col]
-            df[motif_col] = cp.get(motif_col)
+        for col in cp.columns:
+            if col not in df.columns:
+                df[col] = cp[col]
 
-    print_report(df, model_col, ref_col)
+    print_report(df, "statut_externe", REF_COL)
+    print_report(df, model_col, REF_COL)
 
     date_str = datetime.now().strftime("%Y%m%d_%H%M")
     RESULTS_DIR.mkdir(exist_ok=True)
@@ -124,38 +144,95 @@ async def run(model: str, limit: int | None, prompt: int = 1, ref_col: str = "st
     print(f"Rapport CSV sauvegardé : {csv_path}")
 
     md_path = RESULTS_DIR / f"rapport_{date_str}_{model_slug}_p{prompt}.md"
-    generate_markdown_report(df, model_col, model, prompt, md_path, ref_col)
+    generate_markdown_report(df, model_col, model, prompt, md_path, REF_COL, externe_col="statut_externe")
+
+
+def run_externe_only(limit: int | None) -> None:
+    print(f"Chargement des données : {CSV_PATH}")
+    df = load_data(limit)
+    df = normalize_statut(df)
+    df = normalize_human(df)
+
+    # Charger les colonnes des runs LLM précédents pour la synthèse
+    checkpoint_path = RESULTS_DIR / "checkpoint.csv"
+    if checkpoint_path.exists():
+        cp = pd.read_csv(checkpoint_path, encoding="utf-8-sig", index_col=0)
+        for col in cp.columns:
+            if col not in df.columns:
+                df[col] = cp[col]
+
+    print_report(df, "statut_externe", REF_COL)
+
+    date_str = datetime.now().strftime("%Y%m%d_%H%M")
+    RESULTS_DIR.mkdir(exist_ok=True)
+    csv_path = RESULTS_DIR / f"rapport_{date_str}_externe.csv"
+    df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    print(f"Rapport CSV sauvegardé : {csv_path}")
+
+    md_path = RESULTS_DIR / f"rapport_{date_str}_externe.md"
+    generate_markdown_report_externe(df, REF_COL, md_path)
 
 
 def main() -> None:
-    args = sys.argv[1:]
-    reset = "--reset" in args
-    args = [a for a in args if a != "--reset"]
+    """
+    Point d'entrée du programme.
 
-    prompt = 1
-    if "--prompt" in args:
-        idx = args.index("--prompt")
-        prompt = int(args[idx + 1])
-        args = args[:idx] + args[idx + 2:]
+    Paramètres de ligne de commande
+    --------------------------------
+    model (optionnel)
+        Identifiant du modèle LLM à utiliser via l'API OpenRouter
+        (ex: "mistralai/mistral-small-2603").
+        - Si fourni  : lance la modération LLM sur les commentaires, puis génère
+          un rapport comparant à la fois la modération externe et la modération LLM
+          à la référence humaine (colonne `statut_human`).
+        - Si absent  : génère uniquement le rapport de modération externe vs humain,
+          sans aucun appel à un LLM.
 
-    if prompt not in PROMPTS:
-        sys.exit(f"Prompt {prompt} non défini. Disponibles : {sorted(PROMPTS)}")
+    --prompt {1, 2}  (défaut : 1)
+        Numéro du prompt système envoyé au LLM pour guider la décision de modération.
+        Chaque prompt correspond à une stratégie d'instruction différente définie
+        dans moderator.py. Ignoré si aucun modèle n'est fourni.
 
-    ref_col = "statut_externe"
-    if "--ref" in args:
-        idx = args.index("--ref")
-        ref_col = args[idx + 1]
-        args = args[:idx] + args[idx + 2:]
+    --reset
+        Supprime le fichier de checkpoint avant d'exécuter la modération.
+        Utile pour forcer un retraitement complet de tous les commentaires,
+        par exemple après un changement de prompt ou de modèle.
+        Sans ce flag, les commentaires déjà traités sont ignorés (reprise à chaud).
+    """
+    parser = argparse.ArgumentParser(
+        description="Modération de commentaires médicaux — comparaison vs référence humaine."
+    )
+    parser.add_argument(
+        "model",
+        nargs="?",
+        default=None,
+        help="Modèle LLM à utiliser via OpenRouter (ex: mistralai/mistral-small-2603). "
+             "Si absent, génère uniquement le rapport de modération externe.",
+    )
+    parser.add_argument(
+        "--prompt",
+        type=int,
+        default=1,
+        choices=sorted(PROMPTS),
+        help="Numéro du prompt système à utiliser (défaut : 1).",
+    )
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="Supprime le checkpoint avant de lancer la modération.",
+    )
+    args = parser.parse_args()
 
-    model = args[0] if args else MODEL
-
-    if reset:
+    if args.reset:
         checkpoint_path = RESULTS_DIR / "checkpoint.csv"
         if checkpoint_path.exists():
             checkpoint_path.unlink()
             print(f"Checkpoint supprimé : {checkpoint_path}")
 
-    asyncio.run(run(model, TEST_LIMIT, prompt, ref_col))
+    if args.model is None:
+        run_externe_only(TEST_LIMIT)
+    else:
+        asyncio.run(run(args.model, TEST_LIMIT, args.prompt))
 
 
 if __name__ == "__main__":

@@ -23,10 +23,14 @@ sans viser quelqu'un, est toléré.
 - Agression verbale : attaque personnelle directe dont l'intention est de \
 blesser ou d'intimider, même sans insulte explicite.
 
-- URL : tout commentaire contenant un lien (http://, https://, www.) est refusé.
+- URL : tout commentaire contenant un lien (http://, https://, www.) est refusé \
+    sauf s'il est issu des noms de domaines lequotidiendumedecin.fr ou lequotidiendupharmacien.fr.
 
 - Diffamation : accusation grave et non étayée portant atteinte à la \
 réputation d'une personne ou d'une institution.
+
+- Remise en cause des vaccins Covid : déclaration ou allusion remettant en cause l'efficacité \
+    des vaccins contre le Covid-19 sans argumentation scientifique fondée.
 
 En cas de doute sur une insulte, évalue le contexte : s'agit-il d'une \
 attaque personnelle gratuite, ou d'un propos général même grossier ?
@@ -34,7 +38,6 @@ attaque personnelle gratuite, ou d'un propos général même grossier ?
 Réponds uniquement avec un JSON strict, sans texte autour.
 Si le commentaire est accepté : {"decision": "accepté"}
 Si le commentaire est refusé : {"decision": "refusé", "motif": "insulte_ciblée" | "agression_verbale" | "url" | "diffamation"}""",
-
     2: """Tu es modérateur d'un espace de commentaires réservé aux professionnels de santé. \
 Ton unique rôle est d'analyser le commentaire soumis \
 et de décider s'il respecte le règlement ci-dessous.
@@ -65,7 +68,9 @@ def _make_client() -> openai.AsyncOpenAI:
     )
 
 
-async def _call_llm(client: openai.AsyncOpenAI, model: str, text: str, prompt: int = 1) -> dict:
+async def _call_llm(
+    client: openai.AsyncOpenAI, model: str, text: str, prompt: int = 1
+) -> dict:
     system_prompt = PROMPTS[prompt]
     user_message = f'Commentaire : """\n{text}\n"""'
     response = await client.chat.completions.create(
@@ -87,7 +92,10 @@ async def _call_llm(client: openai.AsyncOpenAI, model: str, text: str, prompt: i
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
                 {"role": "assistant", "content": raw},
-                {"role": "user", "content": "Réponds uniquement avec un JSON valide, sans texte autour."},
+                {
+                    "role": "user",
+                    "content": "Réponds uniquement avec un JSON valide, sans texte autour.",
+                },
             ],
             temperature=0,
         )
