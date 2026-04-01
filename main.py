@@ -5,7 +5,11 @@ from pathlib import Path
 
 import pandas as pd
 
-from metrics import generate_markdown_report, generate_markdown_report_externe, print_report
+from metrics import (
+    generate_markdown_report,
+    generate_markdown_report_externe,
+    print_report,
+)
 from moderator import PROMPTS, moderate_batch
 
 # ── Configuration ──────────────────────────────────────────────────────────────
@@ -35,7 +39,7 @@ def normalize_human(df: pd.DataFrame) -> pd.DataFrame:
     def parse(val) -> str | None:
         if pd.isna(val):
             return None
-        return "accepté" if int(val) == 1 else "refusé"
+        return str(val).strip()
 
     df["statut_human"] = df["Human"].apply(parse)
     return df
@@ -47,9 +51,7 @@ def normalize_statut(df: pd.DataFrame) -> pd.DataFrame:
             return "accepté", None
         tokens = val.replace("\n", " ").split()
         if "Refusé" in tokens:
-            motif = next(
-                (t for t in tokens if t not in ("Traité", "Refusé")), None
-            )
+            motif = next((t for t in tokens if t not in ("Traité", "Refusé")), None)
             return "refusé", motif
         return "accepté", None
 
@@ -144,7 +146,9 @@ async def run(model: str, limit: int | None, prompt: int = 1) -> None:
     print(f"Rapport CSV sauvegardé : {csv_path}")
 
     md_path = RESULTS_DIR / f"rapport_{date_str}_{model_slug}_p{prompt}.md"
-    generate_markdown_report(df, model_col, model, prompt, md_path, REF_COL, externe_col="statut_externe")
+    generate_markdown_report(
+        df, model_col, model, prompt, md_path, REF_COL, externe_col="statut_externe"
+    )
 
 
 def run_externe_only(limit: int | None) -> None:
@@ -207,7 +211,7 @@ def main() -> None:
         nargs="?",
         default=None,
         help="Modèle LLM à utiliser via OpenRouter (ex: mistralai/mistral-small-2603). "
-             "Si absent, génère uniquement le rapport de modération externe.",
+        "Si absent, génère uniquement le rapport de modération externe.",
     )
     parser.add_argument(
         "--prompt",
