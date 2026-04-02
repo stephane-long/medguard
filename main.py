@@ -15,7 +15,7 @@ from moderator import PROMPTS, moderate_batch
 # ── Configuration ──────────────────────────────────────────────────────────────
 CSV_PATH = Path("test_sample_236.csv")
 RESULTS_DIR = Path("results")
-MODEL = "mistralai/mistral-small-2603"  # Changer ici pour tester un autre modèle
+MODEL = "mistral/mistral-small-latest"  # Changer ici pour tester un autre modèle
 
 # Limiter à N lignes pour les tests (None = toutes les lignes)
 TEST_LIMIT: int | None = None
@@ -184,8 +184,8 @@ def main() -> None:
     Paramètres de ligne de commande
     --------------------------------
     model (optionnel)
-        Identifiant du modèle LLM à utiliser via l'API OpenRouter
-        (ex: "mistralai/mistral-small-2603").
+        Identifiant du modèle LLM à utiliser via LiteLLM
+        (ex: "mistral/mistral-small-latest", "gpt-4o", "claude-sonnet-4-6").
         - Si fourni  : lance la modération LLM sur les commentaires, puis génère
           un rapport comparant à la fois la modération externe et la modération LLM
           à la référence humaine (colonne `statut_human`).
@@ -210,7 +210,7 @@ def main() -> None:
         "model",
         nargs="?",
         default=None,
-        help="Modèle LLM à utiliser via OpenRouter (ex: mistralai/mistral-small-2603). "
+        help="Modèle LLM à utiliser via LiteLLM (ex: mistral/mistral-small-2503, gpt-4o, claude-sonnet-4-6). "
         "Si absent, génère uniquement le rapport de modération externe.",
     )
     parser.add_argument(

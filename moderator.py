@@ -1,11 +1,12 @@
 import asyncio
 import json
-import os
 
-import openai
+import litellm
 from dotenv import load_dotenv
 
 load_dotenv()
+
+litellm.drop_params = True
 
 PROMPTS: dict[int, str] = {
     1: """Tu es un modérateur de commentaires pour un site d'information médicale \
@@ -61,32 +62,42 @@ Si le commentaire est refusé : {"decision": "refusé", "motif": "insulte_ciblé
 }
 
 
-def _make_client() -> openai.AsyncOpenAI:
-    return openai.AsyncOpenAI(
-        base_url="https://openrouter.ai/api/v1",
-        api_key=os.environ["OPENROUTER_API_KEY"],
-    )
+async def _call_llm(model: str, text: str, prompt: int = 1) -> dict:
+    """Envoie un commentaire au LLM et retourne la décision de modération.
 
+    Appelle le modèle une première fois. Si la réponse n'est pas un JSON valide,
+    effectue une seconde tentative avec un rappel explicite. En cas de double échec,
+    retourne ``{"decision": "erreur"}``.
 
-async def _call_llm(
-    client: openai.AsyncOpenAI, model: str, text: str, prompt: int = 1
-) -> dict:
+    Args:
+        model: Identifiant LiteLLM du modèle (ex: ``"mistral/mistral-small-2503"``).
+        text: Texte du commentaire à modérer.
+        prompt: Numéro du prompt système à utiliser (clé de ``PROMPTS``).
+
+    Returns:
+        Dict contenant au minimum ``{"decision": "accepté" | "refusé" | "erreur"}``,
+        et optionnellement ``{"motif": str}`` en cas de refus.
+    """
     system_prompt = PROMPTS[prompt]
     user_message = f'Commentaire : """\n{text}\n"""'
-    response = await client.chat.completions.create(
+    response = await litellm.acompletion(
         model=model,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},
         ],
         temperature=0,
+        max_tokens=100,
     )
     raw = response.choices[0].message.content.strip()
+    # Certains modèles enveloppent la réponse dans un bloc ```json ... ```
+    if raw.startswith("```"):
+        raw = raw.split("```")[1].removeprefix("json").strip()
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
         # Retry once with explicit reminder
-        retry_response = await client.chat.completions.create(
+        retry_response = await litellm.acompletion(
             model=model,
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -109,13 +120,25 @@ async def _call_llm(
 
 async def _moderate_with_semaphore(
     semaphore: asyncio.Semaphore,
-    client: openai.AsyncOpenAI,
     model: str,
     text: str,
     prompt: int = 1,
 ) -> dict:
+    """Wrapper qui acquiert le sémaphore avant d'appeler ``_call_llm``.
+
+    Limite le nombre d'appels LLM simultanés pour respecter les rate limits.
+
+    Args:
+        semaphore: Sémaphore asyncio contrôlant la concurrence.
+        model: Identifiant LiteLLM du modèle.
+        text: Texte du commentaire à modérer.
+        prompt: Numéro du prompt système à utiliser.
+
+    Returns:
+        Résultat de ``_call_llm``.
+    """
     async with semaphore:
-        return await _call_llm(client, model, text, prompt)
+        return await _call_llm(model, text, prompt)
 
 
 async def moderate_batch(
@@ -124,14 +147,29 @@ async def moderate_batch(
     prompt: int = 1,
     concurrency: int = 10,
 ) -> list[dict]:
-    client = _make_client()
+    """Modère une liste de commentaires en parallèle avec contrôle de concurrence.
+
+    Traite tous les textes de façon asynchrone en limitant le nombre d'appels
+    simultanés via un sémaphore. Affiche la progression tous les 50 commentaires.
+
+    Args:
+        texts: Liste des commentaires à modérer.
+        model: Identifiant LiteLLM du modèle (ex: ``"mistral/mistral-small-2503"``).
+        prompt: Numéro du prompt système à utiliser (défaut : 1).
+        concurrency: Nombre maximal d'appels LLM simultanés (défaut : 10).
+
+    Returns:
+        Liste de dicts dans le même ordre que ``texts``, chacun contenant
+        ``{"decision": "accepté" | "refusé" | "erreur"}`` et optionnellement
+        ``{"motif": str}``.
+    """
     semaphore = asyncio.Semaphore(concurrency)
     total = len(texts)
     completed = 0
 
     async def tracked(text: str) -> dict:
         nonlocal completed
-        result = await _moderate_with_semaphore(semaphore, client, model, text, prompt)
+        result = await _moderate_with_semaphore(semaphore, model, text, prompt)
         completed += 1
         if completed % 50 == 0 or completed == total:
             print(f"  {completed}/{total} commentaires traités...", flush=True)
