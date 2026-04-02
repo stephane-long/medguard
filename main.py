@@ -185,7 +185,7 @@ def main() -> None:
     --------------------------------
     model (optionnel)
         Identifiant du modèle LLM à utiliser via LiteLLM
-        (ex: "mistral/mistral-small-latest", "gpt-4o", "claude-sonnet-4-6").
+        (ex: "mistral/mistral-small-latest", "gpt-4.1-nano", "claude-sonnet-4-6").
         - Si fourni  : lance la modération LLM sur les commentaires, puis génère
           un rapport comparant à la fois la modération externe et la modération LLM
           à la référence humaine (colonne `statut_human`).
@@ -210,7 +210,7 @@ def main() -> None:
         "model",
         nargs="?",
         default=None,
-        help="Modèle LLM à utiliser via LiteLLM (ex: mistral/mistral-small-2503, gpt-4o, claude-sonnet-4-6). "
+        help="Modèle LLM à utiliser via LiteLLM (ex: mistral/mistral-small-latest, gpt-4o, claude-sonnet-4-6). "
         "Si absent, génère uniquement le rapport de modération externe.",
     )
     parser.add_argument(
